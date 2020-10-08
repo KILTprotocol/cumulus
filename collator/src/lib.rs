@@ -29,7 +29,7 @@ use cumulus_primitives::{
 };
 use cumulus_runtime::ParachainBlockData;
 
-use sc_client_api::{BlockBackend, Finalizer, StateBackend, UsageProvider};
+use sc_client_api::{Backend as BackendT, BlockBackend, Finalizer, StateBackend, UsageProvider};
 use sp_api::ApiExt;
 use sp_blockchain::HeaderBackend;
 use sp_consensus::{
@@ -405,7 +405,7 @@ impl<Block: BlockT, PF, BI, Backend, Client, BS>
 type TransactionFor<E, Block> =
 	<<E as Environment<Block>>::Proposer as Proposer<Block>>::Transaction;
 
-impl<Block: BlockT, PF, BI, Backend, Client, BS> BuildParachainContext
+	impl<Block: BlockT, PF, BI, Backend, Client, BS> BuildParachainContext
 	for CollatorBuilder<Block, PF, BI, Backend, Client, BS>
 where
 	PF: Environment<Block> + Send + 'static,
@@ -426,14 +426,19 @@ where
 {
 	type ParachainContext = Collator<Block, PF, BI, BS>;
 
-	fn build<Spawner>(
+	fn build<Spawner, PClient, PBackend, PNetwork>(
 		self,
-		polkadot_client: polkadot_collator::Client,
+		polkadot_client: Arc<PClient>,
 		spawner: Spawner,
-		polkadot_network: impl CollatorNetwork + SyncOracle + Clone + 'static,
+		polkadot_network: PNetwork,
 	) -> Result<Self::ParachainContext, ()>
 	where
 		Spawner: SpawnNamed + Clone + Send + Sync + 'static,
+		PBackend: BackendT<PBlock>,
+		PBackend::State: StateBackend<BlakeTwo256>,
+		PClient: polkadot_service::AbstractClient<PBlock, PBackend> + 'static,
+		PClient::Api: RuntimeApiCollection<StateBackend = PBackend::State>,
+		PNetwork: CollatorNetwork + SyncOracle + Clone + 'static,
 	{
 		let CollatorBuilder {
 			proposer_factory,
@@ -446,19 +451,35 @@ where
 			delayed_block_announce_validator,
 			_marker,
 		} = self;
-		polkadot_client.execute_with(CollatorBuilderWithClient {
-			spawner,
-			polkadot_network,
-			proposer_factory,
-			inherent_data_providers,
-			block_import,
-			block_status,
+		delayed_block_announce_validator.set(Box::new(JustifiedBlockAnnounceValidator::new(
+			polkadot_client.clone(),
+			para_id,
+			Box::new(polkadot_network.clone()),
+		)));
+
+		let follow = match cumulus_consensus::follow_polkadot(
 			para_id,
 			client,
+			polkadot_client,
+			announce_block.clone(),
+		) {
+			Ok(follow) => follow,
+			Err(e) => {
+				return Err(error!("Could not start following polkadot: {:?}", e));
+			}
+		};
+
+		spawner.spawn("cumulus-follow-polkadot", follow.map(|_| ()).boxed());
+
+		Ok(Collator::new(
+			proposer_factory,
+			inherent_data_providers,
+			polkadot_network,
+			block_import,
+			block_status,
+			Arc::new(spawner),
 			announce_block,
-			delayed_block_announce_validator,
-			_marker,
-		})
+		))
 	}
 }
 
@@ -685,22 +706,22 @@ mod tests {
 			block_announce_validator,
 		);
 		let context = builder
-			.build(
-				polkadot_service::Client::Polkadot(Arc::new(
-					substrate_test_client::TestClientBuilder::<_, _, _, ()>::default()
-						.build_with_native_executor::<polkadot_service::polkadot_runtime::RuntimeApi, _>(
-							Some(NativeExecutor::<polkadot_service::PolkadotExecutor>::new(
-								Interpreted,
-								None,
-								1,
-							)),
-						)
-						.0,
-				)),
-				spawner,
-				DummyCollatorNetwork,
-			)
-			.expect("Creates parachain context");
+		.build::<_, _, polkadot_service::FullBackend, _>(
+			Arc::new(
+				substrate_test_client::TestClientBuilder::<_, _, _, ()>::default()
+					.build_with_native_executor::<polkadot_service::polkadot_runtime::RuntimeApi, _>(
+						Some(NativeExecutor::<polkadot_service::PolkadotExecutor>::new(
+							Interpreted,
+							None,
+							1,
+						)),
+					)
+					.0,
+			),
+			spawner,
+			DummyCollatorNetwork,
+		)
+		.expect("Creates parachain context");
 
 		let header = client.header(&BlockId::Number(0)).unwrap().unwrap();
 

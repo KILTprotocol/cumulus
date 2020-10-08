@@ -18,6 +18,7 @@
 //!
 //! Provides functions for starting a collator node or a normal full node.
 
+use polkadot_service::ClientHandle;
 use cumulus_collator::CollatorBuilder;
 use cumulus_network::{DelayedBlockAnnounceValidator, JustifiedBlockAnnounceValidator};
 use cumulus_primitives::ParaId;
