@@ -22,6 +22,7 @@
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
+use pallet_transaction_payment::CurrencyAdapter;
 use cumulus_pallet_contracts_rpc_runtime_api::ContractExecResult;
 use rococo_parachain_primitives::*;
 use sp_api::impl_runtime_apis;
@@ -183,8 +184,7 @@ impl pallet_balances::Trait for Runtime {
 }
 
 impl pallet_transaction_payment::Trait for Runtime {
-	type Currency = Balances;
-	type OnTransactionPayment = ();
+	type OnChargeTransaction = CurrencyAdapter<Balances, ()>;
 	type TransactionByteFee = TransactionByteFee;
 	type WeightToFee = IdentityFee<Balance>;
 	type FeeMultiplierUpdate = ();
